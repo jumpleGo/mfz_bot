@@ -243,8 +243,19 @@ bot.on('callback_query', async (query) => {
         return;
       }
 
+      // Формируем сообщение с информацией о тарифе
+      let tariffMessage = `📦 Выбран тариф: ${tariff.name}\n`;
+      tariffMessage += `💰 Цена: ${tariff.price}${tariff.currencyCode || '₽'}\n`;
+      
+      // Добавляем описание, если оно есть
+      if (tariff.description) {
+        tariffMessage += `\n📝 Описание:\n${tariff.description}\n`;
+      }
+      
+      tariffMessage += `\n💳 Выберите способ оплаты:`;
+
       await bot.editMessageText(
-        `📦 Выбран тариф: ${tariff.name}\n💰 Цена: ${tariff.price}${tariff.currencyCode || '₽'}\n\n💳 Выберите способ оплаты:`,
+        tariffMessage,
         {
           chat_id: chatId,
           message_id: messageId,
