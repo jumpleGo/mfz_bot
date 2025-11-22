@@ -1,5 +1,5 @@
 const admin = require('firebase-admin');
-const { ensureFirebaseCredentialsFile } = require('initFirebaseCredentials');
+const { ensureFirebaseCredentialsFile } = require('../initFirebaseCredentials.js');
 // Инициализация Firebase Admin SDK
 function initializeFirebase() {
   try {
