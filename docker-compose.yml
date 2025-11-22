@@ -1,0 +1,10 @@
+version: '3.8'
+services:
+  bot:
+    build: .
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      # Монтируем firebase-service-account.json из корня сервера
+      - ../firebase-service-account.json:/app/firebase-service-account.json:ro
