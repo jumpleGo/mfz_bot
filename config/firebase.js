@@ -1,14 +1,12 @@
 const admin = require('firebase-admin');
-const { ensureFirebaseCredentialsFile } = require('../initFirebaseCredentials.js');
+
 // Инициализация Firebase Admin SDK
 function initializeFirebase() {
   try {
     // Попытка загрузить service account из файла
     let serviceAccount;
     try {
-        const credentialsPath = ensureFirebaseCredentialsFile();
-        serviceAccount = require(credentialsPath);
-
+      serviceAccount = require('../firebase-service-account.json');
     } catch (error) {
       console.log('⚠️  firebase-service-account.json не найден, используется дефолтная инициализация');
     }
