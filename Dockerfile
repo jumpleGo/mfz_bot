@@ -2,9 +2,14 @@ FROM node:18-alpine
 
 WORKDIR /app
 
-COPY package*.json ./
+# Копируем package.json из app/
+COPY app/package*.json ./
 RUN npm ci --only=production
 
-COPY . .
+# Копируем firebase-service-account.json из корня
+COPY firebase-service-account.json ./firebase-service-account.json
+
+# Копируем остальные файлы проекта из app/
+COPY app/ .
 
 CMD ["node", "bot.js"]
