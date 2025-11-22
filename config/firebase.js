@@ -6,7 +6,8 @@ function initializeFirebase() {
     // Попытка загрузить service account из файла
     let serviceAccount;
     try {
-      serviceAccount = require('../firebase-service-account.json');
+      serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+
     } catch (error) {
       console.log('⚠️  firebase-service-account.json не найден, используется дефолтная инициализация');
     }
