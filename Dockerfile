@@ -2,14 +2,17 @@ FROM node:18-alpine
 
 WORKDIR /app
 
-# Копируем package.json из app/
-COPY app/package*.json ./
+# Копируем манифесты
+COPY package*.json ./
+
+# Устанавливаем зависимости
 RUN npm ci --only=production
 
+# Копируем весь исходник
+COPY . .
 
-# Копируем остальные файлы проекта из app/
-COPY app/ .
-# Копируем firebase-service-account.json из корня
-COPY firebase-service-account.json ./firebase-service-account.json
+# Если firebase-service-account.json лежит в корне репо и тебе правда нужно
+# его КОПИРОВАТЬ в образ (см. пункт 2 ниже):
+# COPY firebase-service-account.json ./firebase-service-account.json
 
 CMD ["node", "bot.js"]
