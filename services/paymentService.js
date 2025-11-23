@@ -63,10 +63,12 @@ async function createPayment(paymentData) {
       currencyCode: paymentData.currencyCode,
       tariffId: paymentData.tariffId,
       tariffName: paymentData.tariffName,
+      months: paymentData.months,
       userTelegram: paymentData.userTelegram,
       userId: paymentData.userId,
       status: 'pending', // pending -> payed
-      receiptPhotoId: null
+      receiptPhotoId: null,
+      extendedSubscriptionKey: paymentData.extendedSubscriptionKey || null // Ключ подписки, которую продлевает этот платеж
     };
 
     const newPaymentRef = db.ref('payments').push();
@@ -163,11 +165,236 @@ async function getPaymentByUserIdWithInviteLink(userId) {
   }
 }
 
+/**
+ * Сохранение даты окончания подписки
+ */
+async function saveSubscriptionEndDate(paymentKey, months) {
+  try {
+    const db = getDatabase();
+    const endDate = new Date();
+    endDate.setMonth(endDate.getMonth() + months);
+    
+    await db.ref(`payments/${paymentKey}`).update({
+      subscriptionEndDate: endDate.toISOString()
+    });
+    return true;
+  } catch (error) {
+    console.error('Ошибка сохранения даты окончания подписки:', error);
+    return false;
+  }
+}
+
+/**
+ * Получение всех пользователей с истекшей подпиской
+ */
+async function getExpiredSubscriptions() {
+  try {
+    const db = getDatabase();
+    const now = new Date().toISOString();
+    
+    const snapshot = await db.ref('payments')
+      .orderByChild('status')
+      .equalTo('payed')
+      .once('value');
+    
+    const payments = snapshot.val();
+    if (!payments) return [];
+    
+    const expiredUsers = [];
+    
+    for (const [key, payment] of Object.entries(payments)) {
+      if (payment.subscriptionEndDate && payment.subscriptionEndDate < now) {
+        expiredUsers.push({
+          ...payment,
+          key
+        });
+      }
+    }
+    
+    return expiredUsers;
+  } catch (error) {
+    console.error('Ошибка получения истекших подписок:', error);
+    return [];
+  }
+}
+
+/**
+ * Получение подписок, которым нужно отправить уведомление
+ */
+async function getSubscriptionsNeedingNotification() {
+  try {
+    const db = getDatabase();
+    const now = new Date();
+    
+    const snapshot = await db.ref('payments')
+      .orderByChild('status')
+      .equalTo('payed')
+      .once('value');
+    
+    const payments = snapshot.val();
+    if (!payments) return { twoDays: [], eightHours: [] };
+    
+    const twoDaysNotifications = [];
+    const eightHoursNotifications = [];
+    
+    for (const [key, payment] of Object.entries(payments)) {
+      if (!payment.subscriptionEndDate) continue;
+      
+      const endDate = new Date(payment.subscriptionEndDate);
+      const timeLeft = endDate - now;
+      
+      // 2 дня = 48 часов = 172800000 миллисекунд
+      // 8 часов = 28800000 миллисекунд
+      const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
+      const eightHoursMs = 8 * 60 * 60 * 1000;
+      
+      // Проверяем уведомление за 2 дня
+      if (timeLeft <= twoDaysMs && timeLeft > eightHoursMs && !payment.notificationSent2Days) {
+        twoDaysNotifications.push({
+          ...payment,
+          key,
+          timeLeft
+        });
+      }
+      
+      // Проверяем уведомление за 8 часов
+      if (timeLeft <= eightHoursMs && timeLeft > 0 && !payment.notificationSent8Hours) {
+        eightHoursNotifications.push({
+          ...payment,
+          key,
+          timeLeft
+        });
+      }
+    }
+    
+    return { twoDays: twoDaysNotifications, eightHours: eightHoursNotifications };
+  } catch (error) {
+    console.error('Ошибка получения подписок для уведомлений:', error);
+    return { twoDays: [], eightHours: [] };
+  }
+}
+
+/**
+ * Отметка подписки как истекшей
+ */
+async function markSubscriptionAsExpired(paymentKey) {
+  try {
+    const db = getDatabase();
+    await db.ref(`payments/${paymentKey}`).update({
+      status: 'expired',
+      updatedAt: new Date().toISOString()
+    });
+    return true;
+  } catch (error) {
+    console.error('Ошибка отметки подписки как истекшей:', error);
+    return false;
+  }
+}
+
+/**
+ * Отметка отправленного уведомления
+ */
+async function markNotificationSent(paymentKey, notificationType) {
+  try {
+    const db = getDatabase();
+    const field = notificationType === '2days' ? 'notificationSent2Days' : 'notificationSent8Hours';
+    await db.ref(`payments/${paymentKey}`).update({
+      [field]: true,
+      [`${field}At`]: new Date().toISOString()
+    });
+    return true;
+  } catch (error) {
+    console.error('Ошибка отметки отправленного уведомления:', error);
+    return false;
+  }
+}
+
+/**
+ * Получение активной подписки пользователя
+ */
+async function getActiveSubscription(userId) {
+  try {
+    const db = getDatabase();
+    const snapshot = await db.ref('payments')
+      .orderByChild('userId')
+      .equalTo(userId)
+      .once('value');
+    
+    const payments = snapshot.val();
+    if (!payments) return null;
+    
+    const now = new Date().toISOString();
+    
+    // Ищем активную подписку (status = payed и subscriptionEndDate > now)
+    for (const [key, payment] of Object.entries(payments)) {
+      if (payment.status === 'payed' && payment.subscriptionEndDate && payment.subscriptionEndDate > now) {
+        return { ...payment, key };
+      }
+    }
+    
+    return null;
+  } catch (error) {
+    console.error('Ошибка получения активной подписки:', error);
+    return null;
+  }
+}
+
+/**
+ * Продление существующей подписки
+ */
+async function extendSubscription(paymentKey, additionalMonths) {
+  try {
+    const db = getDatabase();
+    const payment = await getPaymentByKey(paymentKey);
+    
+    if (!payment || !payment.subscriptionEndDate) {
+      console.error('❌ Не найдена подписка для продления:', paymentKey);
+      return false;
+    }
+    
+    const currentEndDate = new Date(payment.subscriptionEndDate);
+    const now = new Date();
+    
+    // Если подписка еще активна, продлеваем от текущей даты окончания
+    // Если уже истекла, продлеваем от текущего момента
+    const baseDate = currentEndDate > now ? currentEndDate : now;
+    const newEndDate = new Date(baseDate);
+    newEndDate.setMonth(newEndDate.getMonth() + additionalMonths);
+    
+    console.log(`🔄 Продление подписки для пользователя ${payment.userId}:`, {
+      paymentKey,
+      additionalMonths,
+      oldEndDate: currentEndDate.toISOString(),
+      newEndDate: newEndDate.toISOString()
+    });
+    
+    await db.ref(`payments/${paymentKey}`).update({
+      subscriptionEndDate: newEndDate.toISOString(),
+      updatedAt: new Date().toISOString(),
+      // Сбрасываем флаги уведомлений для продленной подписки
+      notificationSent2Days: false,
+      notificationSent8Hours: false
+    });
+    
+    return true;
+  } catch (error) {
+    console.error('Ошибка продления подписки:', error);
+    return false;
+  }
+}
+
 module.exports = {
   getPaymentMethods,
   createPayment,
   updatePaymentStatus,
   saveInviteLink,
   getPaymentByKey,
-  getPaymentByUserIdWithInviteLink
+  getPaymentByUserIdWithInviteLink,
+  saveSubscriptionEndDate,
+  getExpiredSubscriptions,
+  markSubscriptionAsExpired,
+  getSubscriptionsNeedingNotification,
+  markNotificationSent,
+  getActiveSubscription,
+  extendSubscription
 };

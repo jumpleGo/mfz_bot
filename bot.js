@@ -2,14 +2,15 @@ require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const { initializeFirebase } = require('./config/firebase');
 const { getActiveTariffs, getTariffById } = require('./services/tariffService');
-const { getPaymentMethods, createPayment, updatePaymentStatus, saveInviteLink, getPaymentByKey, getPaymentByUserIdWithInviteLink } = require('./services/paymentService');
+const { getPaymentMethods, createPayment, updatePaymentStatus, saveInviteLink, getPaymentByKey, getPaymentByUserIdWithInviteLink, saveSubscriptionEndDate, getExpiredSubscriptions, markSubscriptionAsExpired, getSubscriptionsNeedingNotification, markNotificationSent, getActiveSubscription, extendSubscription } = require('./services/paymentService');
 const {
   getMainMenuKeyboard,
   getTariffsKeyboard,
   getPaymentMethodsKeyboard,
   getPaymentConfirmationKeyboard,
   getAdminConfirmationKeyboard,
-  getBackToMainKeyboard
+  getBackToMainKeyboard,
+  getVariantsKeyboard
 } = require('./utils/keyboards');
 
 // Инициализация Firebase
@@ -24,6 +25,13 @@ const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
 
 // Хранилище временных данных пользователей
 const userSessions = new Map();
+
+// Вспомогательная функция для склонения месяцев
+function getMonthsText(months) {
+  if (months === 1) return 'месяц';
+  if (months >= 2 && months <= 4) return 'месяца';
+  return 'месяцев';
+}
 
 console.log('🤖 Бот запущен...');
 console.log('📡 Подписка на обновления: message, callback_query');
@@ -62,10 +70,159 @@ async function checkChannelAccess() {
   }
 }
 
-// Запускаем проверку после инициализации
-bot.on('ready', () => {
-  checkChannelAccess();
-});
+// Отправка уведомлений о скором окончании подписки
+async function sendExpirationNotifications() {
+  try {
+    console.log('📬 Проверка подписок для отправки уведомлений...');
+    
+    const { twoDays, eightHours } = await getSubscriptionsNeedingNotification();
+    
+    // Отправка уведомлений за 2 дня
+    for (const subscription of twoDays) {
+      try {
+        const endDate = new Date(subscription.subscriptionEndDate);
+        const formattedDate = endDate.toLocaleString('ru-RU', {
+          day: 'numeric',
+          month: 'long',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        });
+        
+        await bot.sendMessage(
+          subscription.userId,
+          `⏰ Напоминание о подписке\n\n` +
+          `Ваша подписка на тариф "${subscription.tariffName}" скоро закончится!\n\n` +
+          `📅 Дата окончания: ${formattedDate}\n\n` +
+          `💡 Вы можете продлить подписку прямо сейчас, чтобы не потерять доступ к каналу.\n\n` +
+          `Используйте /start для оформления новой подписки.`
+        );
+        
+        await markNotificationSent(subscription.key, '2days');
+        console.log(`✅ Уведомление за 2 дня отправлено пользователю ${subscription.userTelegram}`);
+      } catch (error) {
+        console.error(`❌ Ошибка отправки уведомления за 2 дня пользователю ${subscription.userId}:`, error.message);
+      }
+    }
+    
+    // Отправка уведомлений за 8 часов
+    for (const subscription of eightHours) {
+      try {
+        const endDate = new Date(subscription.subscriptionEndDate);
+        const formattedDate = endDate.toLocaleString('ru-RU', {
+          day: 'numeric',
+          month: 'long',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        });
+        
+        await bot.sendMessage(
+          subscription.userId,
+          `🚨 СРОЧНО: Подписка заканчивается!\n\n` +
+          `Ваша подписка на тариф "${subscription.tariffName}" закончится менее чем через 8 часов!\n\n` +
+          `📅 Дата окончания: ${formattedDate}\n\n` +
+          `⚠️ Продлите подписку сейчас, чтобы не потерять доступ к каналу.\n\n` +
+          `Используйте /start для продления.`
+        );
+        
+        await markNotificationSent(subscription.key, '8hours');
+        console.log(`✅ Уведомление за 8 часов отправлено пользователю ${subscription.userTelegram}`);
+      } catch (error) {
+        console.error(`❌ Ошибка отправки уведомления за 8 часов пользователю ${subscription.userId}:`, error.message);
+      }
+    }
+    
+    const totalSent = twoDays.length + eightHours.length;
+    if (totalSent > 0) {
+      console.log(`✅ Отправлено уведомлений: ${totalSent} (2 дня: ${twoDays.length}, 8 часов: ${eightHours.length})`);
+    } else {
+      console.log('✅ Уведомлений для отправки не найдено');
+    }
+  } catch (error) {
+    console.error('❌ Ошибка при отправке уведомлений:', error);
+  }
+}
+
+// Проверка истекших подписок
+async function checkExpiredSubscriptions() {
+  try {
+    console.log('🔍 Проверка истекших подписок...');
+    
+    const expiredUsers = await getExpiredSubscriptions();
+    
+    if (expiredUsers.length === 0) {
+      console.log('✅ Истекших подписок не найдено');
+      return;
+    }
+    
+    console.log(`⚠️ Найдено ${expiredUsers.length} истекших подписок`);
+    
+    const channelId = process.env.CHANNEL_ID;
+    if (!channelId) {
+      console.error('❌ CHANNEL_ID не указан в .env');
+      return;
+    }
+    
+    for (const user of expiredUsers) {
+      try {
+        // Проверяем, состоит ли пользователь в канале
+        const member = await bot.getChatMember(channelId, user.userId);
+        
+        if (member.status !== 'left' && member.status !== 'kicked') {
+          // Удаляем пользователя из канала
+          await bot.banChatMember(channelId, user.userId);
+          // Сразу разбаниваем, чтобы пользователь мог вернуться по новой подписке
+          await bot.unbanChatMember(channelId, user.userId);
+          
+          console.log(`✅ Пользователь ${user.userTelegram} (${user.userId}) удален из канала`);
+          
+          // Уведомляем пользователя об окончании подписки
+          await bot.sendMessage(
+            user.userId,
+            `❌ Ваша подписка закончилась\n\n` +
+            `Подписка на тариф "${user.tariffName}" истекла, и вы были удалены из канала.\n\n` +
+            `💡 Вы можете купить подписку заново и снова получить доступ к каналу!\n\n` +
+            `Используйте /start для оформления новой подписки.`
+          ).catch(err => console.error('Не удалось отправить уведомление пользователю:', err.message));
+        }
+        
+        // Помечаем подписку как истекшую
+        await markSubscriptionAsExpired(user.key);
+        
+      } catch (error) {
+        console.error(`❌ Ошибка при обработке пользователя ${user.userId}:`, error.message);
+      }
+    }
+    
+    console.log('✅ Проверка истекших подписок завершена');
+  } catch (error) {
+    console.error('❌ Ошибка при проверке истекших подписок:', error);
+  }
+}
+
+// Запускаем проверки после инициализации бота
+(async () => {
+  try {
+    console.log('🚀 Инициализация проверок...');
+    
+    await checkChannelAccess();
+    
+    // Первая проверка сразу после запуска
+    await checkExpiredSubscriptions();
+    await sendExpirationNotifications();
+    
+    // Проверяем истекшие подписки каждые 6 часов
+    setInterval(checkExpiredSubscriptions, 6 * 60 * 60 * 1000);
+    
+    // Проверяем уведомления каждый час
+    setInterval(sendExpirationNotifications, 60 * 60 * 1000);
+    
+    console.log('✅ Все проверки запущены');
+  } catch (error) {
+    console.error('❌ Ошибка инициализации проверок:', error);
+  }
+})();
 
 // === КОМАНДЫ ===
 
@@ -220,13 +377,59 @@ bot.on('callback_query', async (query) => {
         return;
       }
 
+      // Проверяем наличие вариантов
+      if (!tariff.variants || Object.keys(tariff.variants).length === 0) {
+        await bot.answerCallbackQuery(query.id, { text: '❌ У тарифа нет доступных вариантов', show_alert: true });
+        return;
+      }
+
       // Сохраняем выбранный тариф в сессии
       userSessions.set(userId, {
         tariffId,
         tariffName: tariff.name,
-        price: tariff.price,
         currencyCode: tariff.currencyCode || '₽'
       });
+
+      // Формируем сообщение с информацией о тарифе
+      let tariffMessage = `📦 Выбран тариф: ${tariff.name}\n`;
+      
+      // Добавляем описание, если оно есть
+      if (tariff.description) {
+        tariffMessage += `\n📝 Описание:\n${tariff.description}\n`;
+      }
+      
+      tariffMessage += `\n⏰ Выберите срок подписки:`;
+
+      await bot.editMessageText(
+        tariffMessage,
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          ...getVariantsKeyboard(tariff.variants, tariffId, tariff.currencyCode || '₽')
+        }
+      );
+    }
+
+    // Выбор варианта подписки
+    else if (data.startsWith('variant_')) {
+      const [, tariffId, variantId] = data.split('_');
+      const tariff = await getTariffById(tariffId);
+
+      if (!tariff || !tariff.variants || !tariff.variants[variantId]) {
+        await bot.answerCallbackQuery(query.id, { text: '❌ Вариант не найден', show_alert: true });
+        return;
+      }
+
+      const variant = tariff.variants[variantId];
+
+      // Обновляем сессию с выбранным вариантом
+      const session = userSessions.get(userId) || {};
+      session.tariffId = tariffId;
+      session.tariffName = tariff.name;
+      session.price = variant.price;
+      session.months = variant.months;
+      session.currencyCode = tariff.currencyCode || '₽';
+      userSessions.set(userId, session);
 
       // Получаем методы оплаты
       const paymentMethods = await getPaymentMethods();
@@ -243,19 +446,27 @@ bot.on('callback_query', async (query) => {
         return;
       }
 
-      // Формируем сообщение с информацией о тарифе
-      let tariffMessage = `📦 Выбран тариф: ${tariff.name}\n`;
-      tariffMessage += `💰 Цена: ${tariff.price}${tariff.currencyCode || '₽'}\n`;
+      // Формируем сообщение
+      let message = `📦 Тариф: ${tariff.name}\n`;
+      message += `⏰ Срок: ${variant.months} ${getMonthsText(variant.months)}\n`;
+      message += `💰 Цена: ${variant.price}${session.currencyCode}\n`;
       
-      // Добавляем описание, если оно есть
-      if (tariff.description) {
-        tariffMessage += `\n📝 Описание:\n${tariff.description}\n`;
+      // Показываем экономию, если не базовый вариант
+      if (variant.months > 1) {
+        const pricePerMonth = variant.price / variant.months;
+        const baseVariant = Object.values(tariff.variants).find(v => v.months === 1);
+        if (baseVariant) {
+          const savings = (baseVariant.price * variant.months) - variant.price;
+          if (savings > 0) {
+            message += `💎 Экономия: ${Math.round(savings)}${session.currencyCode}\n`;
+          }
+        }
       }
       
-      tariffMessage += `\n💳 Выберите способ оплаты:`;
+      message += `\n💳 Выберите способ оплаты:`;
 
       await bot.editMessageText(
-        tariffMessage,
+        message,
         {
           chat_id: chatId,
           message_id: messageId,
@@ -282,15 +493,17 @@ bot.on('callback_query', async (query) => {
         return;
       }
 
-      // Создаем платеж
+      // Создаем платеж (связь с продлеваемой подпиской установим при подтверждении)
       const payment = await createPayment({
         crypto: methodId,
         price: session.price,
         currencyCode: session.currencyCode,
         tariffId: session.tariffId,
         tariffName: session.tariffName,
+        months: session.months,
         userTelegram: userName,
-        userId: userId
+        userId: userId,
+        extendedSubscriptionKey: null
       });
 
       if (!payment) {
@@ -303,14 +516,17 @@ bot.on('callback_query', async (query) => {
       session.paymentMethod = methodId;
       userSessions.set(userId, session);
 
+      // Формируем сообщение
+      let paymentMessage = `💳 Реквизиты для оплаты:\n\n`;
+      paymentMessage += `Метод: ${selectedMethod.name}\n`;
+      paymentMessage += `Адрес: \`${selectedMethod.address}\`\n`;
+      paymentMessage += `Сумма: ${session.price}${session.currencyCode}\n\n`;
+      paymentMessage += `⏱ Время на оплату: 30 минут\n`;
+      paymentMessage += `📝 ID платежа: ${payment.id}\n\n`;
+      paymentMessage += `После оплаты нажмите кнопку ниже и прикрепите скриншот чека.`;
+
       await bot.editMessageText(
-        `💳 Реквизиты для оплаты:\n\n` +
-        `Метод: ${selectedMethod.name}\n` +
-        `Адрес: \`${selectedMethod.address}\`\n` +
-        `Сумма: ${session.price}${session.currencyCode}\n\n` +
-        `⏱ Время на оплату: 30 минут\n` +
-        `📝 ID платежа: ${payment.id}\n\n` +
-        `После оплаты нажмите кнопку ниже и прикрепите скриншот чека.`,
+        paymentMessage,
         {
           chat_id: chatId,
           message_id: messageId,
@@ -359,8 +575,73 @@ bot.on('callback_query', async (query) => {
         return;
       }
 
+      // Проверяем, есть ли у пользователя активная подписка (status=payed и subscriptionEndDate > now)
+      const activeSubscription = await getActiveSubscription(payment.userId);
+
+      if (activeSubscription) {
+        // У пользователя уже есть активная подписка - продлеваем ее
+        console.log(`🔄 Пользователь ${payment.userId} имеет активную подписку, продлеваем...`);
+        
+        // Обновляем статус нового платежа
+        await updatePaymentStatus(paymentKey, 'payed');
+        
+        // Сохраняем связь с продлеваемой подпиской
+        const { getDatabase } = require('./config/firebase');
+        const db = getDatabase();
+        await db.ref(`payments/${paymentKey}`).update({
+          extendedSubscriptionKey: activeSubscription.key
+        });
+        
+        // Продлеваем существующую подписку
+        await extendSubscription(activeSubscription.key, payment.months);
+        
+        const oldEndDate = new Date(activeSubscription.subscriptionEndDate);
+        const newEndDate = new Date(oldEndDate);
+        newEndDate.setMonth(newEndDate.getMonth() + payment.months);
+        
+        // Уведомляем пользователя о продлении
+        await bot.sendMessage(
+          payment.userId,
+          `✅ Ваша подписка успешно продлена!\n\n` +
+          `📦 Тариф: ${payment.tariffName}\n` +
+          `⏰ Добавлено: ${payment.months} ${getMonthsText(payment.months)}\n` +
+          `💰 Сумма: ${payment.price}${payment.currencyCode || '₽'}\n\n` +
+          `📅 Новая дата окончания: ${newEndDate.toLocaleString('ru-RU', {
+            day: 'numeric',
+            month: 'long',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+          })}\n\n` +
+          `Вы продолжаете оставаться участником канала! 🎉`
+        );
+        
+        // Убираем кнопки из исходного сообщения
+        await bot.editMessageReplyMarkup(
+          { inline_keyboard: [] },
+          { chat_id: chatId, message_id: messageId }
+        );
+        
+        // Уведомляем админа
+        await bot.sendMessage(
+          chatId,
+          `✅ Платеж подтвержден и подписка продлена для @${payment.userTelegram}\n\n` +
+          `Добавлено: ${payment.months} ${getMonthsText(payment.months)}\n` +
+          `Новая дата окончания: ${newEndDate.toLocaleString('ru-RU')}`
+        );
+        
+        await bot.answerCallbackQuery(query.id, { text: '✅ Подписка продлена', show_alert: false });
+        return;
+      }
+
+      // Нет активной подписки - создаем новую и выдаем ссылку
+      console.log(`📝 Пользователь ${payment.userId} не имеет активной подписки, создаем новую...`);
+      
       // Обновляем статус
       await updatePaymentStatus(paymentKey, 'payed');
+
+      // Сохраняем дату окончания подписки
+      await saveSubscriptionEndDate(paymentKey, payment.months);
 
       // Генерируем одноразовую ссылку на канал
       try {
@@ -430,6 +711,12 @@ bot.on('callback_query', async (query) => {
           `• После присоединения используйте команду /joined чтобы подтвердить вход\n`
         );
 
+        // Убираем кнопки из исходного сообщения
+        await bot.editMessageReplyMarkup(
+          { inline_keyboard: [] },
+          { chat_id: chatId, message_id: messageId }
+        );
+        
         // Уведомляем админа
         await bot.sendMessage(
           chatId,
@@ -481,6 +768,12 @@ bot.on('callback_query', async (query) => {
         `Если вы считаете это ошибкой, пожалуйста, свяжитесь с поддержкой.`
       );
 
+      // Убираем кнопки из исходного сообщения
+      await bot.editMessageReplyMarkup(
+        { inline_keyboard: [] },
+        { chat_id: chatId, message_id: messageId }
+      );
+      
       // Уведомляем админа
       await bot.sendMessage(
         chatId,

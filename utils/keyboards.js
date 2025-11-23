@@ -16,10 +16,27 @@ function getMainMenuKeyboard() {
  * Клавиатура с тарифами
  */
 function getTariffsKeyboard(tariffs) {
-  const keyboard = tariffs.map(tariff => ([{
-    text: `${tariff.name} - ${tariff.price} ${tariff.currencyCode || '₽'}`,
-    callback_data: `tariff_${tariff.id}`
-  }]));
+  const keyboard = tariffs.map(tariff => {
+    // Если есть варианты, показываем диапазон цен
+    let text = tariff.name;
+    
+    if (tariff.variants && Object.keys(tariff.variants).length > 0) {
+      const prices = Object.values(tariff.variants).map(v => v.price);
+      const minPrice = Math.min(...prices);
+      const maxPrice = Math.max(...prices);
+      
+      if (minPrice === maxPrice) {
+        text += ` - от ${minPrice}${tariff.currencyCode || '₽'}`;
+      } else {
+        text += ` - от ${minPrice}${tariff.currencyCode || '₽'}`;
+      }
+    }
+    
+    return [{
+      text,
+      callback_data: `tariff_${tariff.id}`
+    }];
+  });
 
   keyboard.push([{ text: '◀️ Назад', callback_data: 'back_to_main' }]);
 
@@ -79,6 +96,54 @@ function getAdminConfirmationKeyboard(paymentKey) {
 }
 
 /**
+ * Клавиатура с вариантами подписки
+ */
+function getVariantsKeyboard(variants, tariffId, currencyCode = '₽') {
+  // Находим базовый вариант (1 месяц) - это основа для расчета скидок
+  const baseVariant = Object.values(variants).find(v => v.months === 1);
+  const basePricePerMonth = baseVariant ? baseVariant.price : 0;
+
+  const keyboard = Object.entries(variants).map(([variantId, variant]) => {
+    const { months, price } = variant;
+    
+    // Рассчитываем цену за месяц для текущего варианта
+    const pricePerMonth = price / months;
+    
+    // Рассчитываем скидку относительно базовой цены (1 месяц)
+    // Скидка = ((базовая цена за месяц - текущая цена за месяц) / базовая цена за месяц) * 100
+    const discount = basePricePerMonth > 0 ? Math.round(((basePricePerMonth - pricePerMonth) / basePricePerMonth) * 100) : 0;
+    
+    let text = `${months} ${getMonthsText(months)} - ${price}${currencyCode}`;
+    
+    if (discount > 0) {
+      text += ` (скидка ${discount}%)`;
+    }
+    
+    return [{
+      text,
+      callback_data: `variant_${tariffId}_${variantId}`
+    }];
+  });
+
+  keyboard.push([{ text: '◀️ Назад', callback_data: 'select_subscription' }]);
+
+  return {
+    reply_markup: {
+      inline_keyboard: keyboard
+    }
+  };
+}
+
+/**
+ * Получение правильного склонения для месяцев
+ */
+function getMonthsText(months) {
+  if (months === 1) return 'месяц';
+  if (months >= 2 && months <= 4) return 'месяца';
+  return 'месяцев';
+}
+
+/**
  * Клавиатура возврата в главное меню
  */
 function getBackToMainKeyboard() {
@@ -97,5 +162,6 @@ module.exports = {
   getPaymentMethodsKeyboard,
   getPaymentConfirmationKeyboard,
   getAdminConfirmationKeyboard,
-  getBackToMainKeyboard
+  getBackToMainKeyboard,
+  getVariantsKeyboard
 };
