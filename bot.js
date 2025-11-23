@@ -3,6 +3,8 @@ const TelegramBot = require('node-telegram-bot-api');
 const { initializeFirebase } = require('./config/firebase');
 const { getActiveTariffs, getTariffById } = require('./services/tariffService');
 const { getPaymentMethods, createPayment, updatePaymentStatus, saveInviteLink, getPaymentByKey, getPaymentByUserIdWithInviteLink, saveSubscriptionEndDate, getExpiredSubscriptions, markSubscriptionAsExpired, getSubscriptionsNeedingNotification, markNotificationSent, getActiveSubscription, extendSubscription } = require('./services/paymentService');
+const { createReminder, getRemindersToSend, markReminderAsSent, hasActiveReminder } = require('./services/reminderService');
+const { isAltsWatcherAvailable, getNextAltsWatcherDate, getNextReminderDate, formatDateForUser, isCloseToOpening, getTimeUntilOpening } = require('./utils/dateUtils');
 const {
   getMainMenuKeyboard,
   getTariffsKeyboard,
@@ -10,7 +12,8 @@ const {
   getPaymentConfirmationKeyboard,
   getAdminConfirmationKeyboard,
   getBackToMainKeyboard,
-  getVariantsKeyboard
+  getVariantsKeyboard,
+  getReminderKeyboard
 } = require('./utils/keyboards');
 
 // Инициализация Firebase
@@ -31,6 +34,18 @@ function getMonthsText(months) {
   if (months === 1) return 'месяц';
   if (months >= 2 && months <= 4) return 'месяца';
   return 'месяцев';
+}
+
+function getHoursText(hours) {
+  if (hours === 1 || hours === 21) return 'час';
+  if ((hours >= 2 && hours <= 4) || (hours >= 22 && hours <= 24)) return 'часа';
+  return 'часов';
+}
+
+function getMinutesText(minutes) {
+  if (minutes === 1 || minutes === 21 || minutes === 31 || minutes === 41 || minutes === 51) return 'минута';
+  if ((minutes >= 2 && minutes <= 4) || (minutes >= 22 && minutes <= 24) || (minutes >= 32 && minutes <= 34) || (minutes >= 42 && minutes <= 44) || (minutes >= 52 && minutes <= 54)) return 'минуты';
+  return 'минут';
 }
 
 console.log('🤖 Бот запущен...');
@@ -201,6 +216,47 @@ async function checkExpiredSubscriptions() {
   }
 }
 
+// Проверка и отправка напоминаний о доступности тарифов
+async function sendReminders() {
+  try {
+    console.log('🔔 Проверка напоминаний...');
+    
+    const reminders = await getRemindersToSend();
+    
+    if (reminders.length === 0) {
+      console.log('✅ Напоминаний для отправки не найдено');
+      return;
+    }
+    
+    console.log(`📬 Найдено ${reminders.length} напоминаний для отправки`);
+    
+    for (const reminder of reminders) {
+      try {
+        const nextDate = getNextAltsWatcherDate();
+        
+        await bot.sendMessage(
+          reminder.userId,
+          `🔔 Напоминание о доступности тарифа!\n\n` +
+          `Тариф "${reminder.tariffName}" будет доступен для покупки 26 и 27 числа.\n\n` +
+          `📅 Следующая дата: ${formatDateForUser(nextDate)}\n\n` +
+          `Не упустите возможность оформить подписку!\n\n` +
+          `Используйте /start для покупки.`
+        );
+        
+        await markReminderAsSent(reminder.key);
+        console.log(`✅ Напоминание отправлено пользователю ${reminder.userId}`);
+        
+      } catch (error) {
+        console.error(`❌ Ошибка отправки напоминания для ${reminder.userId}:`, error.message);
+      }
+    }
+    
+    console.log('✅ Проверка напоминаний завершена');
+  } catch (error) {
+    console.error('❌ Ошибка при проверке напоминаний:', error);
+  }
+}
+
 // Запускаем проверки после инициализации бота
 (async () => {
   try {
@@ -211,12 +267,16 @@ async function checkExpiredSubscriptions() {
     // Первая проверка сразу после запуска
     await checkExpiredSubscriptions();
     await sendExpirationNotifications();
+    await sendReminders();
     
     // Проверяем истекшие подписки каждые 6 часов
     setInterval(checkExpiredSubscriptions, 6 * 60 * 60 * 1000);
     
     // Проверяем уведомления каждый час
     setInterval(sendExpirationNotifications, 60 * 60 * 1000);
+    
+    // Проверяем напоминания каждый час
+    setInterval(sendReminders, 60 * 60 * 1000);
     
     console.log('✅ Все проверки запущены');
   } catch (error) {
@@ -383,6 +443,48 @@ bot.on('callback_query', async (query) => {
         return;
       }
 
+      // Проверяем ограничения по датам для тарифа altsWatcher
+      if (tariffId === 'altsWatcher' && !isAltsWatcherAvailable()) {
+        let message = `⏰ Тариф "${tariff.name}" доступен для покупки только 26 и 27 числа каждого месяца (00:00-23:59 МСК).\n\n`;
+        
+        // Если близко к открытию (25 число после 18:00), показываем обратный отсчет
+        if (isCloseToOpening()) {
+          const timeLeft = getTimeUntilOpening();
+          
+          message += `⏳ До начала открытия набора осталось:\n`;
+          message += `⏰ ${timeLeft.hours} ${getHoursText(timeLeft.hours)} ${timeLeft.minutes} ${getMinutesText(timeLeft.minutes)}\n\n`;
+          message += `Возвращайтесь в 00:00 МСК, чтобы оформить подписку! 🎯`;
+          
+          await bot.editMessageText(
+            message,
+            {
+              chat_id: chatId,
+              message_id: messageId,
+              ...getBackToMainKeyboard()
+            }
+          );
+        } else {
+          // Предлагаем установить напоминание
+          const nextDate = getNextAltsWatcherDate();
+          const reminderDate = getNextReminderDate();
+          
+          message += `📅 Следующая дата доступности: ${formatDateForUser(nextDate)}\n\n`;
+          message += `💡 Хотите, чтобы я напомнил вам о возможности покупки?\n`;
+          message += `Напоминание будет отправлено ${formatDateForUser(reminderDate)} по Вашему локальному времени.`;
+          
+          await bot.editMessageText(
+            message,
+            {
+              chat_id: chatId,
+              message_id: messageId,
+              ...getReminderKeyboard(tariffId)
+            }
+          );
+        }
+        
+        return;
+      }
+
       // Сохраняем выбранный тариф в сессии
       userSessions.set(userId, {
         tariffId,
@@ -449,7 +551,7 @@ bot.on('callback_query', async (query) => {
       // Формируем сообщение
       let message = `📦 Тариф: ${tariff.name}\n`;
       message += `⏰ Срок: ${variant.months} ${getMonthsText(variant.months)}\n`;
-      message += `💰 Цена: ${variant.price}${session.currencyCode}\n`;
+      message += `💰 Цена: ${variant.price} ${session.currencyCode}\n`;
       
       // Показываем экономию, если не базовый вариант
       if (variant.months > 1) {
@@ -458,7 +560,7 @@ bot.on('callback_query', async (query) => {
         if (baseVariant) {
           const savings = (baseVariant.price * variant.months) - variant.price;
           if (savings > 0) {
-            message += `💎 Экономия: ${Math.round(savings)}${session.currencyCode}\n`;
+            message += `💎 Экономия: ${Math.round(savings)} ${session.currencyCode}\n`;
           }
         }
       }
@@ -520,7 +622,7 @@ bot.on('callback_query', async (query) => {
       let paymentMessage = `💳 Реквизиты для оплаты:\n\n`;
       paymentMessage += `Метод: ${selectedMethod.name}\n`;
       paymentMessage += `Адрес: \`${selectedMethod.address}\`\n`;
-      paymentMessage += `Сумма: ${session.price}${session.currencyCode}\n\n`;
+      paymentMessage += `Сумма: ${session.price} ${session.currencyCode}\n\n`;
       paymentMessage += `⏱ Время на оплату: 30 минут\n`;
       paymentMessage += `📝 ID платежа: ${payment.id}\n\n`;
       paymentMessage += `После оплаты нажмите кнопку ниже и прикрепите скриншот чека.`;
@@ -605,7 +707,7 @@ bot.on('callback_query', async (query) => {
           `✅ Ваша подписка успешно продлена!\n\n` +
           `📦 Тариф: ${payment.tariffName}\n` +
           `⏰ Добавлено: ${payment.months} ${getMonthsText(payment.months)}\n` +
-          `💰 Сумма: ${payment.price}${payment.currencyCode || '₽'}\n\n` +
+          `💰 Сумма: ${payment.price} ${payment.currencyCode || '₽'}\n\n` +
           `📅 Новая дата окончания: ${newEndDate.toLocaleString('ru-RU', {
             day: 'numeric',
             month: 'long',
@@ -704,7 +806,7 @@ bot.on('callback_query', async (query) => {
           payment.userId,
           `✅ Ваш платеж подтвержден!\n\n` +
           `📦 Тариф: ${payment.tariffName}\n` +
-          `💰 Сумма: ${payment.price}${payment.currencyCode || '₽'}\n\n` +
+          `💰 Сумма: ${payment.price} ${payment.currencyCode || '₽'}\n\n` +
           `🔗 Одноразовая ссылка на канал:\n${inviteLink.invite_link}\n\n` +
           `⚠️ ВАЖНО:\n` +
           `• Ссылка автоматически отзовется через 30 минут\n` +
@@ -781,6 +883,52 @@ bot.on('callback_query', async (query) => {
       );
     }
 
+    // Установка напоминания о доступности тарифа
+    else if (data.startsWith('set_reminder_')) {
+      const tariffId = data.replace('set_reminder_', '');
+      const tariff = await getTariffById(tariffId);
+
+      if (!tariff) {
+        await bot.answerCallbackQuery(query.id, { text: '❌ Тариф не найден', show_alert: true });
+        return;
+      }
+
+      // Проверяем, есть ли уже активное напоминание
+      const hasReminder = await hasActiveReminder(userId, tariffId);
+      
+      if (hasReminder) {
+        await bot.answerCallbackQuery(query.id, { 
+          text: '✅ У вас уже установлено напоминание об этом тарифе', 
+          show_alert: true 
+        });
+        return;
+      }
+
+      // Создаем напоминание
+      const reminderDate = getNextReminderDate();
+      const success = await createReminder(userId, tariffId, tariff.name, reminderDate);
+
+      if (success) {
+        await bot.editMessageText(
+          `✅ Отлично! Я напомню вам о доступности тарифа "${tariff.name}"\n\n` +
+          `📅 Напоминание будет отправлено: ${formatDateForUser(reminderDate)} по МСК\n\n` +
+          `После этого вы сможете приобрести подписку 26 и 27 числа.`,
+          {
+            chat_id: chatId,
+            message_id: messageId,
+            ...getBackToMainKeyboard()
+          }
+        );
+        
+        await bot.answerCallbackQuery(query.id, { text: '🔔 Напоминание установлено!', show_alert: false });
+      } else {
+        await bot.answerCallbackQuery(query.id, { 
+          text: '❌ Не удалось установить напоминание. Попробуйте позже.', 
+          show_alert: true 
+        });
+      }
+    }
+
     await bot.answerCallbackQuery(query.id);
   } catch (error) {
     console.error('Ошибка обработки callback:', error);
@@ -816,7 +964,7 @@ bot.on('photo', async (msg) => {
       `🔔 Новый чек на проверку\n\n` +
       `👤 Пользователь: @${payment.userTelegram}\n` +
       `📦 Тариф: ${payment.tariffName}\n` +
-      `💰 Сумма: ${payment.price}${payment.currencyCode || '₽'}\n` +
+      `💰 Сумма: ${payment.price} ${payment.currencyCode || '₽'}\n` +
       `💳 Метод: ${payment.crypto}\n` +
       `📝 ID платежа: ${payment.id}\n` +
       `⏰ Создан: ${new Date(payment.createdAt).toLocaleString('ru-RU')}`,

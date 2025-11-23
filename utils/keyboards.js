@@ -26,9 +26,9 @@ function getTariffsKeyboard(tariffs) {
       const maxPrice = Math.max(...prices);
       
       if (minPrice === maxPrice) {
-        text += ` - от ${minPrice}${tariff.currencyCode || '₽'}`;
+        text += ` - от ${minPrice} ${tariff.currencyCode || '₽'}`;
       } else {
-        text += ` - от ${minPrice}${tariff.currencyCode || '₽'}`;
+        text += ` - от ${minPrice} ${tariff.currencyCode || '₽'}`;
       }
     }
     
@@ -113,7 +113,7 @@ function getVariantsKeyboard(variants, tariffId, currencyCode = '₽') {
     // Скидка = ((базовая цена за месяц - текущая цена за месяц) / базовая цена за месяц) * 100
     const discount = basePricePerMonth > 0 ? Math.round(((basePricePerMonth - pricePerMonth) / basePricePerMonth) * 100) : 0;
     
-    let text = `${months} ${getMonthsText(months)} - ${price}${currencyCode}`;
+    let text = `${months} ${getMonthsText(months)} - ${price} ${currencyCode}`;
     
     if (discount > 0) {
       text += ` (скидка ${discount}%)`;
@@ -156,6 +156,20 @@ function getBackToMainKeyboard() {
   };
 }
 
+/**
+ * Клавиатура для установки напоминания
+ */
+function getReminderKeyboard(tariffId) {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🔔 Да, напомнить мне', callback_data: `set_reminder_${tariffId}` }],
+        [{ text: '◀️ Назад', callback_data: 'select_subscription' }]
+      ]
+    }
+  };
+}
+
 module.exports = {
   getMainMenuKeyboard,
   getTariffsKeyboard,
@@ -163,5 +177,6 @@ module.exports = {
   getPaymentConfirmationKeyboard,
   getAdminConfirmationKeyboard,
   getBackToMainKeyboard,
-  getVariantsKeyboard
+  getVariantsKeyboard,
+  getReminderKeyboard
 };
