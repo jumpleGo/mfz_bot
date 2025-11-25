@@ -4,6 +4,7 @@ const { initializeFirebase } = require('./config/firebase');
 const { getActiveTariffs, getTariffById } = require('./services/tariffService');
 const { getPaymentMethods, createPayment, updatePaymentStatus, saveInviteLink, getPaymentByKey, getPaymentByUserIdWithInviteLink, saveSubscriptionEndDate, getExpiredSubscriptions, markSubscriptionAsExpired, getSubscriptionsNeedingNotification, markNotificationSent, getActiveSubscription, extendSubscription } = require('./services/paymentService');
 const { createReminder, getRemindersToSend, markReminderAsSent, hasActiveReminder } = require('./services/reminderService');
+const { saveUser } = require('./services/userService');
 const { isAltsWatcherAvailable, getNextAltsWatcherDate, getNextReminderDate, formatDateForUser, isCloseToOpening, getTimeUntilOpening } = require('./utils/dateUtils');
 const {
   getMainMenuKeyboard,
@@ -289,6 +290,9 @@ async function sendReminders() {
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
   const userName = msg.from.username || msg.from.first_name;
+
+  // Сохраняем пользователя в базу данных
+  await saveUser(msg.from);
 
   await bot.sendMessage(
     chatId,
