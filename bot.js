@@ -2,7 +2,7 @@ require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const { initializeFirebase } = require('./config/firebase');
 const { getActiveTariffs, getTariffById } = require('./services/tariffService');
-const { getPaymentMethods, createPayment, updatePaymentStatus, saveInviteLink, getPaymentByKey, getPaymentByUserIdWithInviteLink, saveSubscriptionEndDate, getExpiredSubscriptions, markSubscriptionAsExpired, getSubscriptionsNeedingNotification, markNotificationSent, getActiveSubscription, extendSubscription } = require('./services/paymentService');
+const { getPaymentMethods, createPayment, updatePaymentStatus, saveInviteLink, getPaymentByKey, getPaymentByUserIdWithInviteLink, saveSubscriptionEndDate, getExpiredSubscriptions, markSubscriptionAsExpired, getSubscriptionsNeedingNotification, markNotificationSent, getActiveSubscription, extendSubscription, getExpiredPendingPayments } = require('./services/paymentService');
 const { createReminder, getRemindersToSend, markReminderAsSent, hasActiveReminder } = require('./services/reminderService');
 const { saveUser } = require('./services/userService');
 const { isAltsWatcherAvailable, getNextAltsWatcherDate, getNextReminderDate, formatDateForUser, isCloseToOpening, getTimeUntilOpening } = require('./utils/dateUtils');
@@ -102,7 +102,8 @@ async function sendExpirationNotifications() {
           month: 'long',
           year: 'numeric',
           hour: '2-digit',
-          minute: '2-digit'
+          minute: '2-digit',
+          timeZone: 'Europe/Moscow'
         });
         
         await bot.sendMessage(
@@ -130,7 +131,8 @@ async function sendExpirationNotifications() {
           month: 'long',
           year: 'numeric',
           hour: '2-digit',
-          minute: '2-digit'
+          minute: '2-digit',
+          timeZone: 'Europe/Moscow'
         });
         
         await bot.sendMessage(
@@ -217,6 +219,49 @@ async function checkExpiredSubscriptions() {
   }
 }
 
+// Проверка и автоматическая отмена просроченных неоплаченных платежей
+async function checkExpiredPayments() {
+  try {
+    console.log('🔍 Проверка просроченных платежей...');
+    
+    const expiredPayments = await getExpiredPendingPayments();
+    
+    if (expiredPayments.length === 0) {
+      console.log('✅ Просроченных платежей не найдено');
+      return;
+    }
+    
+    console.log(`⚠️ Найдено ${expiredPayments.length} просроченных платежей`);
+    
+    for (const payment of expiredPayments) {
+      try {
+        // Обновляем статус платежа на 'cancelled'
+        await updatePaymentStatus(payment.key, 'cancelled');
+        
+        console.log(`✅ Платеж ${payment.id} автоматически отменен`);
+        
+        // Уведомляем пользователя об автоматической отмене
+        await bot.sendMessage(
+          payment.userId,
+          `⏰ Время оплаты истекло\n\n` +
+          `Ваша заявка на оплату была автоматически отменена, так как оплата не была произведена в течение часа.\n\n` +
+          `📝 ID платежа: ${payment.id}\n` +
+          `📦 Тариф: ${payment.tariffName}\n` +
+          `💰 Сумма: ${payment.price} ${payment.currencyCode || '₽'}\n\n` +
+          `💡 Вы можете создать новую заявку на оплату, используя /start`
+        ).catch(err => console.error('Не удалось отправить уведомление пользователю:', err.message));
+        
+      } catch (error) {
+        console.error(`❌ Ошибка при обработке платежа ${payment.id}:`, error.message);
+      }
+    }
+    
+    console.log('✅ Проверка просроченных платежей завершена');
+  } catch (error) {
+    console.error('❌ Ошибка при проверке просроченных платежей:', error);
+  }
+}
+
 // Проверка и отправка напоминаний о доступности тарифов
 async function sendReminders() {
   try {
@@ -269,6 +314,7 @@ async function sendReminders() {
     await checkExpiredSubscriptions();
     await sendExpirationNotifications();
     await sendReminders();
+    await checkExpiredPayments();
     
     // Проверяем истекшие подписки каждые 6 часов
     setInterval(checkExpiredSubscriptions, 6 * 60 * 60 * 1000);
@@ -278,6 +324,9 @@ async function sendReminders() {
     
     // Проверяем напоминания каждый час
     setInterval(sendReminders, 60 * 60 * 1000);
+    
+    // Проверяем просроченные платежи каждые 15 минут
+    setInterval(checkExpiredPayments, 15 * 60 * 1000);
     
     console.log('✅ Все проверки запущены');
   } catch (error) {
@@ -660,6 +709,13 @@ bot.on('callback_query', async (query) => {
 
     // Отмена платежа
     else if (data === 'cancel_payment') {
+      const session = userSessions.get(userId);
+      
+      // Обновляем статус платежа в базе данных
+      if (session && session.paymentKey) {
+        await updatePaymentStatus(session.paymentKey, 'cancelled');
+      }
+      
       userSessions.delete(userId);
       await bot.editMessageText(
         '❌ Платеж отменен.\n\nВернитесь в главное меню.',
@@ -717,8 +773,9 @@ bot.on('callback_query', async (query) => {
             month: 'long',
             year: 'numeric',
             hour: '2-digit',
-            minute: '2-digit'
-          })}\n\n` +
+            minute: '2-digit',
+            timeZone: 'Europe/Moscow'
+          })} (МСК)\n\n` +
           `Вы продолжаете оставаться участником канала! 🎉`
         );
         
@@ -733,7 +790,7 @@ bot.on('callback_query', async (query) => {
           chatId,
           `✅ Платеж подтвержден и подписка продлена для @${payment.userTelegram}\n\n` +
           `Добавлено: ${payment.months} ${getMonthsText(payment.months)}\n` +
-          `Новая дата окончания: ${newEndDate.toLocaleString('ru-RU')}`
+          `Новая дата окончания: ${newEndDate.toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} (МСК)`
         );
         
         await bot.answerCallbackQuery(query.id, { text: '✅ Подписка продлена', show_alert: false });
@@ -971,7 +1028,7 @@ bot.on('photo', async (msg) => {
       `💰 Сумма: ${payment.price} ${payment.currencyCode || '₽'}\n` +
       `💳 Метод: ${payment.crypto}\n` +
       `📝 ID платежа: ${payment.id}\n` +
-      `⏰ Создан: ${new Date(payment.createdAt).toLocaleString('ru-RU')}`,
+      `⏰ Создан: ${new Date(payment.createdAt).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} (МСК)`,
     ...getAdminConfirmationKeyboard(session.paymentKey)
   });
 

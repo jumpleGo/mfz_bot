@@ -340,6 +340,41 @@ async function getActiveSubscription(userId) {
 }
 
 /**
+ * Получение просроченных неоплаченных платежей (старше 1 часа)
+ */
+async function getExpiredPendingPayments() {
+  try {
+    const db = getDatabase();
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    
+    const snapshot = await db.ref('payments')
+      .orderByChild('status')
+      .equalTo('pending')
+      .once('value');
+    
+    const payments = snapshot.val();
+    if (!payments) return [];
+    
+    const expiredPayments = [];
+    
+    for (const [key, payment] of Object.entries(payments)) {
+      // Проверяем, что платеж создан больше часа назад
+      if (payment.createdAt < oneHourAgo) {
+        expiredPayments.push({
+          ...payment,
+          key
+        });
+      }
+    }
+    
+    return expiredPayments;
+  } catch (error) {
+    console.error('Ошибка получения просроченных платежей:', error);
+    return [];
+  }
+}
+
+/**
  * Продление существующей подписки
  */
 async function extendSubscription(paymentKey, additionalMonths) {
@@ -396,5 +431,6 @@ module.exports = {
   getSubscriptionsNeedingNotification,
   markNotificationSent,
   getActiveSubscription,
-  extendSubscription
+  extendSubscription,
+  getExpiredPendingPayments
 };
