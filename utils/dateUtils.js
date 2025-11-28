@@ -15,8 +15,15 @@ function getMoscowDate() {
 /**
  * Проверить, доступна ли покупка тарифа altsWatcher
  * Доступно только 26 и 27 числа каждого месяца (с 26 00:00 по 27 23:59 по МСК)
+ * Разработчик (ID: 409552299) может покупать всегда
  */
-function isAltsWatcherAvailable() {
+function isAltsWatcherAvailable(userId = null) {
+  // Разработчик может покупать всегда
+  if (userId && userId.toString() === '409552299') {
+    console.log(`🔓 Разработчик ${userId} обходит проверку дат для altsWatcher`);
+    return true;
+  }
+  
   const moscowDate = getMoscowDate();
   const day = moscowDate.getDate();
   

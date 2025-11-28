@@ -30,6 +30,9 @@ const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
 // Хранилище временных данных пользователей
 const userSessions = new Map();
 
+// ID разработчика (имеет доступ к покупкам без ограничений по датам)
+const DEVELOPER_ID = '409552299';
+
 // Вспомогательная функция для склонения месяцев
 function getMonthsText(months) {
   if (months === 1) return 'месяц';
@@ -454,6 +457,64 @@ bot.on('callback_query', async (query) => {
       );
     }
 
+    // Моя подписка
+    else if (data === 'my_subscription') {
+      const subscription = await getActiveSubscription(userId);
+
+      if (!subscription) {
+        await bot.editMessageText(
+          '📋 У вас нет активной подписки\n\n' +
+          '💡 Вы можете оформить подписку, выбрав "Выбрать подписку" в главном меню.',
+          {
+            chat_id: chatId,
+            message_id: messageId,
+            ...getBackToMainKeyboard()
+          }
+        );
+        return;
+      }
+
+      // Форматируем информацию о подписке
+      const subscriptionEndDate = new Date(subscription.subscriptionEndDate);
+      const now = new Date();
+      const daysLeft = Math.ceil((subscriptionEndDate - now) / (1000 * 60 * 60 * 24));
+
+      let message = '📋 Ваша активная подписка\n\n';
+      message += `📦 Тариф: ${subscription.tariffName}\n`;
+      
+      if (subscription.variantName) {
+        message += `📌 Вариант: ${subscription.variantName}\n`;
+      }
+      
+      message += `💰 Стоимость: ${subscription.price} ${subscription.currencyCode || '₽'}\n`;
+      message += `💳 Способ оплаты: ${subscription.crypto}\n\n`;
+      
+      message += `📅 Дата оформления: ${new Date(subscription.createdAt).toLocaleString('ru-RU')}\n`;
+      message += `⏰ Действует до: ${subscriptionEndDate.toLocaleString('ru-RU')}\n\n`;
+      
+      // Добавляем информацию о времени до истечения
+      if (daysLeft > 0) {
+        message += `⏳ Осталось: ${daysLeft} ${daysLeft === 1 ? 'день' : daysLeft <= 4 ? 'дня' : 'дней'}\n\n`;
+        
+        if (daysLeft <= 3) {
+          message += `⚠️ Ваша подписка скоро истечет!\nНе забудьте продлить её, чтобы сохранить доступ.`;
+        } else {
+          message += `✅ Ваша подписка активна`;
+        }
+      } else {
+        message += `⚠️ Подписка истекла`;
+      }
+
+      await bot.editMessageText(
+        message,
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          ...getBackToMainKeyboard()
+        }
+      );
+    }
+
     // Выбор подписки
     else if (data === 'select_subscription') {
       const tariffs = await getActiveTariffs();
@@ -497,7 +558,7 @@ bot.on('callback_query', async (query) => {
       }
 
       // Проверяем ограничения по датам для тарифа altsWatcher
-      if (tariffId === 'altsWatcher' && !isAltsWatcherAvailable()) {
+      if (tariffId === 'altsWatcher' && !isAltsWatcherAvailable(userId)) {
         let message = `⏰ Тариф "${tariff.name}" доступен для покупки только 26 и 27 числа каждого месяца (00:00-23:59 МСК).\n\n`;
         
         // Если близко к открытию (25 число после 18:00), показываем обратный отсчет

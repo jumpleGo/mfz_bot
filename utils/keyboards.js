@@ -6,6 +6,7 @@ function getMainMenuKeyboard() {
     reply_markup: {
       inline_keyboard: [
         [{ text: '💳 Выбрать подписку', callback_data: 'select_subscription' }],
+        [{ text: '📋 Моя подписка', callback_data: 'my_subscription' }],
         [{ text: 'ℹ️ Информация', callback_data: 'info' }]
       ]
     }
