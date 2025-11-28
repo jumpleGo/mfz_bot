@@ -1,0 +1,13 @@
+node_modules/
+.env
+*.log
+.git
+.gitignore
+README.md
+docs/
+coverage/
+.nyc_output/
+.jest/
+
+# НЕ игнорируем firebase-service-account.json - он нужен в образе
+# !firebase-service-account.json
