@@ -5,6 +5,7 @@ const { getActiveTariffs, getTariffById } = require('./services/tariffService');
 const { getPaymentMethods, createPayment, updatePaymentStatus, saveInviteLink, getPaymentByKey, getPaymentByUserIdWithInviteLink, saveSubscriptionEndDate, getExpiredSubscriptions, markSubscriptionAsExpired, getSubscriptionsNeedingNotification, markNotificationSent, getActiveSubscription, extendSubscription, getExpiredPendingPayments } = require('./services/paymentService');
 const { createReminder, getRemindersToSend, markReminderAsSent, hasActiveReminder } = require('./services/reminderService');
 const { saveUser } = require('./services/userService');
+const { initMessageQueueListener } = require('./services/messageQueueService');
 const { isAltsWatcherAvailable, getNextAltsWatcherDate, getNextReminderDate, formatDateForUser, isCloseToOpening, getTimeUntilOpening } = require('./utils/dateUtils');
 const {
   getMainMenuKeyboard,
@@ -54,6 +55,9 @@ function getMinutesText(minutes) {
 
 console.log('🤖 Бот запущен...');
 console.log('📡 Подписка на обновления: message, callback_query');
+
+// Инициализация слушателя очереди сообщений
+initMessageQueueListener(bot);
 
 // Проверка доступа к каналу
 async function checkChannelAccess() {
