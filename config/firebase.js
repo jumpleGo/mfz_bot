@@ -3,20 +3,34 @@ const admin = require('firebase-admin');
 // Инициализация Firebase Admin SDK
 function initializeFirebase() {
   try {
-    // Попытка загрузить service account из файла
-    let serviceAccount;
-    try {
-      serviceAccount = require('../firebase-service-account.json');
-    } catch (error) {
-      console.log('⚠️  firebase-service-account.json не найден, используется дефолтная инициализация');
-    }
-
     const config = {
       databaseURL: process.env.FIREBASE_DATABASE_URL
     };
 
-    if (serviceAccount) {
-      config.credential = admin.credential.cert(serviceAccount);
+    // Приоритет 1: Переменные окружения (для Docker/production)
+    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+      try {
+        const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+        config.credential = admin.credential.cert(serviceAccount);
+        console.log('✅ Firebase credentials загружены из переменной окружения');
+      } catch (error) {
+        console.error('❌ Ошибка парсинга FIREBASE_SERVICE_ACCOUNT:', error.message);
+        throw error;
+      }
+    }
+    // Приоритет 2: Файл service account (для локальной разработки)
+    else {
+      try {
+        const serviceAccount = require('../firebase-service-account.json');
+        config.credential = admin.credential.cert(serviceAccount);
+        console.log('✅ Firebase credentials загружены из файла');
+      } catch (error) {
+        console.error('❌ firebase-service-account.json не найден и FIREBASE_SERVICE_ACCOUNT не установлена');
+        console.error('Необходимо либо:');
+        console.error('1. Создать файл firebase-service-account.json');
+        console.error('2. Установить переменную окружения FIREBASE_SERVICE_ACCOUNT');
+        throw error;
+      }
     }
 
     admin.initializeApp(config);

@@ -10,4 +10,4 @@ coverage/
 .jest/
 
 # НЕ игнорируем firebase-service-account.json - он нужен в образе
-# !firebase-service-account.json
+!firebase-service-account.json
