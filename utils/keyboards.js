@@ -157,20 +157,6 @@ function getBackToMainKeyboard() {
   };
 }
 
-/**
- * Клавиатура для установки напоминания
- */
-function getReminderKeyboard(tariffId) {
-  return {
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: '🔔 Да, напомнить мне', callback_data: `set_reminder_${tariffId}` }],
-        [{ text: '◀️ Назад', callback_data: 'select_subscription' }]
-      ]
-    }
-  };
-}
-
 module.exports = {
   getMainMenuKeyboard,
   getTariffsKeyboard,
@@ -178,6 +164,5 @@ module.exports = {
   getPaymentConfirmationKeyboard,
   getAdminConfirmationKeyboard,
   getBackToMainKeyboard,
-  getVariantsKeyboard,
-  getReminderKeyboard
+  getVariantsKeyboard
 };
